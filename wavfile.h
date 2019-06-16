@@ -21,7 +21,7 @@ typedef struct _WavFile {
     uint64_t dataLength;
     WavHeader * header;
     bool fileIsOpen;
-    uint8_t * samples;
+    float * samples;
     bool formatChunkFound;
     bool dataChunkFound;
     size_t sampleCount;
@@ -56,7 +56,7 @@ size_t wavFormatGetSampleCount(WavFile * hFile);
 /*
     Get a sample, returns NULL if nothing is read.
 */
-void * wavFormatGetSample(WavFile * hFile, size_t sample);
+float wavFormatGetSample(WavFile * hFile, size_t sample);
 /*
     Gets the number of bits per sample. Returns 0 in the case of errors.
 */
@@ -64,5 +64,5 @@ uint16_t wavFormatGetBitsPerSample(WavFile * hFile);
 /*
     Sets a sample, returns false for errors.
 */
-bool wavFormatSetSample(WavFile * hFile, size_t sample, void * value);
+bool wavFormatSetSample(WavFile * hFile, size_t sample, float value);
 #endif

@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+
 #include "wavfile.h"
 
 bool wavFormatIsProcessable(WavFile * hFile);
@@ -9,6 +11,21 @@ bool wavFormatProcessDescriptorChunk(WavFile * hFile);
 bool wavFormatProcessDataChunk(WavFile * hFile);
 bool wavFormatProcessFormatChunk(WavFile * hFile);
 bool wavFormatProcessUnknownChunk(WavFile*  hFile);
+
+// Map values to the range of  [-1.F,  1.F]
+const float U8_CONVERSION_FACTOR = 2.F/UINT8_MAX;
+const float I16_CONVERSION_FACTOR = 2.F/INT16_MAX;
+const float I32_CONVERSION_FACTOR = 2.F/INT32_MAX;
+
+float u8ToSample(uint8_t sample) {
+    return sample * U8_CONVERSION_FACTOR - 1.F;
+}
+float i16ToSample(int16_t sample) {
+    return sample * I16_CONVERSION_FACTOR;
+}
+float i32ToSample(int32_t sample) {
+    return sample * I32_CONVERSION_FACTOR;
+}
 
 bool wavFormatIsProcessable(WavFile * hFile) {
     return hFile != NULL && hFile->fileIsOpen && !feof( hFile->handle );
@@ -41,19 +58,55 @@ bool wavFormatProcessDataChunk(WavFile * hFile) {
     }
 
     size_t bytesRead = fread(&(hFile->dataLength), 1, 4, hFile->handle);
+    size_t totalBytesRead = 0;
     if (bytesRead != 4) {
         return false;
     } 
 
-    hFile->samples = malloc(hFile->dataLength);
+    hFile->samples = malloc(wavFormatGetSampleCount(hFile) * sizeof(float));
     if (hFile->samples == NULL) { 
         return false;
     }
-    bytesRead = fread(hFile->samples, 1, hFile->dataLength, hFile->handle);
 
-    if (bytesRead != hFile->dataLength) {
-        return false;
-    } 
+    size_t i = 0;
+    size_t expectedSize =  hFile->header->bitsPerSample / 8;
+    bytesRead = hFile->header->bitsPerSample / 8;
+    
+    while ( totalBytesRead < hFile->dataLength && bytesRead == expectedSize){
+        if ( expectedSize == 1 ) {
+            uint8_t sample = 0;
+            bytesRead = fread(&sample, 1, expectedSize, hFile->handle);
+
+            if (bytesRead != expectedSize) {
+                return false;
+            }
+            hFile->samples[i++] = u8ToSample(sample);
+        }
+        else if ( expectedSize == 2 ) {
+            int16_t sample = 0;
+            bytesRead = fread(&sample, 1, expectedSize, hFile->handle);
+
+            if (bytesRead != expectedSize) {
+                return false;
+            }
+            hFile->samples[i++] = i16ToSample(sample);
+        }
+        else if ( expectedSize == 4) {
+            int32_t sample = 0;
+            bytesRead = fread(&sample, 1, expectedSize, hFile->handle);
+
+            if (bytesRead != expectedSize) {
+                return false;
+            }
+            hFile->samples[i++] = i32ToSample(sample);
+        }
+        else {
+            // We don't handle any variants outside of 1, 2, and 4 byte samples
+            return false;
+        }
+        totalBytesRead += bytesRead;
+    }
+    
 
     hFile->dataChunkFound = true;
     return true;
@@ -171,39 +224,37 @@ bool wavFormatIsReady(WavFile * hFile) {
 }
 
 size_t wavFormatGetSampleCount(WavFile * hFile) {
-    if ( !wavFormatIsReady(hFile) ) {
-        return 0;
-    }
+    // TODO: Check non null values for hFile and header
     if  ( hFile->sampleCount != 0 ) { 
         return hFile->sampleCount;
     }
     if ( hFile->dataLength > 0 && 
         hFile->header->bitsPerSample > 0 &&
         hFile->dataLength / hFile->header->bitsPerSample > 0 ) {
-        hFile->sampleCount = hFile->dataLength / hFile->header->bitsPerSample;
+        hFile->sampleCount = hFile->dataLength / (hFile->header->bitsPerSample / 8);
         return hFile->sampleCount;
     }
     return 0;
 }
 
-void * wavFormatGetSample(WavFile * hFile, size_t sample) {
+float wavFormatGetSample(WavFile * hFile, size_t sample) {
     if ( !wavFormatIsReady(hFile) ) {
-        return NULL;
+        return NAN;
     }
     if ( sample > wavFormatGetSampleCount(hFile) ) {
-        return NULL;
+        return NAN;
     }
-    return hFile->samples + (sample * hFile->header->bitsPerSample / 8);
+    return hFile->samples[sample];
 }
 
-bool wavFormatSetSample(WavFile * hFile, size_t sample, void * value) { 
+bool wavFormatSetSample(WavFile * hFile, size_t sample, float value) { 
     if ( !wavFormatIsReady(hFile) ) {
         return false;
     }
     if ( sample > wavFormatGetSampleCount(hFile) ) {
         return false;
     }
-    memmove(hFile->samples + (sample * hFile->header->bitsPerSample / 8), value, hFile->header->bitsPerSample / 8);
+    hFile->samples[sample] = value;
     return true;
 }
 
@@ -259,6 +310,8 @@ bool wavFormatSave(WavFile * hFile, const char * filename) {
         cleanupAndRemove(file, filename);
         return false;
     }
+
+
     if (!fwriteAndVerify("data", 1, 4, file)) {
         cleanupAndRemove(file, filename);
         return false;
@@ -267,7 +320,35 @@ bool wavFormatSave(WavFile * hFile, const char * filename) {
         cleanupAndRemove(file, filename);
         return false;
     }
-    if (!fwriteAndVerify(hFile->samples, hFile->dataLength, 1, file)) {
+
+    size_t i = 0;
+    size_t expectedSize =  hFile->header->bitsPerSample / 8;
+    size_t bytesWritten = expectedSize;
+    size_t totalBytesWritten = 0;
+    
+    while ( totalBytesWritten < hFile->dataLength && bytesWritten == expectedSize){
+        if ( expectedSize == 1 ) {
+            uint8_t sample = (uint8_t)((hFile->samples[i++]+1.F) / U8_CONVERSION_FACTOR);
+            bytesWritten = fwrite(&sample, 1, expectedSize, file);
+        }
+        else if ( expectedSize == 2 ) {
+            int16_t sample = (int16_t)(hFile->samples[i++] / I16_CONVERSION_FACTOR);
+            bytesWritten = fwrite(&sample, 1, expectedSize, file);
+        }
+        else if ( expectedSize == 4 ) { 
+            int32_t sample = (int32_t)(hFile->samples[i++] / I16_CONVERSION_FACTOR);
+            bytesWritten = fwrite(&sample, 1, expectedSize, file);
+        }
+        else { 
+            // We can only handle 1,2, or 4 byte samples.
+            cleanupAndRemove(file, filename);
+            return false;
+        }
+        totalBytesWritten += bytesWritten;
+
+    }
+    if ( totalBytesWritten != hFile->dataLength || bytesWritten != expectedSize ) { 
+        // Either a write failed or we didn't get the the entire sample set.
         cleanupAndRemove(file, filename);
         return false;
     }

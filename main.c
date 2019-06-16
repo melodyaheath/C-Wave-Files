@@ -31,11 +31,11 @@ int main(int argc, char** argv) {
 
     printf("Changing samples\n");
     for ( size_t i = 0; i < sampleCount; i++ ) {
-        uint16_t sample = *(uint16_t*)wavFormatGetSample(source, i);
-        if (!wavFormatSetSample(source, i, &sample)) {
+        float sample = wavFormatGetSample(source, i);
+        if (!wavFormatSetSample(source, i, sample)) {
             fprintf(stderr, "Failed to update sample\n");
             wavFormatClose(source);
-            return -1
+            return -1;
         }
     }
     bool destination = wavFormatSave(source, argv[2]);
